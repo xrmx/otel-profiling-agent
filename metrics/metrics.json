@@ -1930,5 +1930,12 @@
     "name": "StackDeltaProviderSuccess",
     "field": "agent.stack_delta_extraction.success",
     "id": 271
+  },
+  {
+    "description": "Number of failures to read PyThreadState.context in unwind_python()",
+    "type": "counter",
+    "name": "UnwindPythonErrBadThreadStateContextAddr",
+    "field": "bpf.python.errors.bad_thread_state_context_addr",
+    "id": 272
   }
 ]

@@ -209,7 +209,7 @@ ErrorCode get_PyThreadState(const PyProcInfo *pyinfo, void *tsd_base, void *auto
 }
 
 static inline __attribute__((__always_inline__))
-ErrorCode get_PyFrame(const PyProcInfo *pyinfo, void **frame) {
+ErrorCode get_PyFrame(const PyProcInfo *pyinfo, void **frame, Trace *trace) {
   void *tsd_base;
   if (tsd_get_base(&tsd_base)) {
     DEBUG_PRINT("Failed to get TSD base address");
@@ -270,6 +270,22 @@ ErrorCode get_PyFrame(const PyProcInfo *pyinfo, void **frame) {
     }
   }
 
+  void *py_context;
+  // Get PyThreadState.context
+  if (bpf_probe_read(&py_context, sizeof(void *),
+          py_tsd_thread_state + pyinfo->PyThreadState_context)) {
+    DEBUG_PRINT(
+        "Failed to read PyThreadState.context at 0x%lx",
+        (unsigned long) (py_tsd_thread_state + pyinfo->PyThreadState_context));
+    increment_metric(metricID_UnwindPythonErrBadThreadStateContextAddr);
+    return ERR_PYTHON_BAD_THREAD_STATE_CONTEXT_ADDR;
+  }
+
+  // TODO: read trace and span id from py_context
+
+
+  // TODO: fill trace trace_id and span_id with the relevant data
+
   return ERR_OK;
 }
 
@@ -300,7 +316,7 @@ int unwind_python(struct pt_regs *ctx) {
   DEBUG_PRINT("Building Python stack for 0x%x", pyinfo->version);
   if (!record->pythonUnwindState.py_frame) {
     increment_metric(metricID_UnwindPythonAttempts);
-    error = get_PyFrame(pyinfo, &record->pythonUnwindState.py_frame);
+    error = get_PyFrame(pyinfo, &record->pythonUnwindState.py_frame, trace);
     if (error) {
       goto exit;
     }

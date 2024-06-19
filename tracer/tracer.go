@@ -1016,6 +1016,7 @@ func (t *Tracer) StartMapMonitors(ctx context.Context, traceOutChan chan *host.T
 		C.metricID_UnwindDotnetErrBadFP:                       metrics.IDUnwindDotnetErrBadFP,
 		C.metricID_UnwindDotnetErrCodeHeader:                  metrics.IDUnwindDotnetErrCodeHeader,
 		C.metricID_UnwindDotnetErrCodeTooLarge:                metrics.IDUnwindDotnetErrCodeTooLarge,
+		C.metricID_UnwindPythonErrBadThreadStateContextAddr:   metrics.IDUnwindPythonErrBadThreadStateContextAddr,
 	}
 
 	// previousMetricValue stores the previously retrieved metric values to

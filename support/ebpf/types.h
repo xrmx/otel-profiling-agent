@@ -301,6 +301,9 @@ enum {
   // number of failures to unwind code object due to its large size
   metricID_UnwindDotnetErrCodeTooLarge,
 
+  // number of failures to read PyThreadState.context in unwind_python()
+  metricID_UnwindPythonErrBadThreadStateContextAddr,
+
   //
   // Metric IDs above are for counters (cumulative values)
   //
@@ -399,13 +402,14 @@ typedef struct PyProcInfo {
   u16 version;
   TSDInfo tsdInfo;
   // The Python object member offsets
-  u8 PyThreadState_frame;
+  u8 PyThreadState_frame, PyThreadState_context;
   u8 PyCFrame_current_frame;
   u8 PyFrameObject_f_back, PyFrameObject_f_code, PyFrameObject_f_lasti;
   u8 PyFrameObject_entry_member, PyFrameObject_entry_val;
   u8 PyCodeObject_co_argcount, PyCodeObject_co_kwonlyargcount;
   u8 PyCodeObject_co_flags, PyCodeObject_co_firstlineno;
   u8 PyCodeObject_sizeof;
+  u8 PyContextObject_ctx_vars;
 } PyProcInfo;
 
 // PHPProcInfo is a container for the data needed to build a stack trace for a PHP process.

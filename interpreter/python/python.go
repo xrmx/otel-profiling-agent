@@ -21,6 +21,7 @@ import (
 	"unsafe"
 
 	log "github.com/sirupsen/logrus"
+	siphash13 "github.com/dgryski/go-sip13"
 
 	"github.com/elastic/go-freelru"
 
@@ -60,6 +61,8 @@ type pythonData struct {
 
 	autoTLSKey libpf.SymbolValue
 
+	currentSpanCtxVarHash int32
+
 	// vmStructs reflects the Python Interpreter introspection data we want
 	// need to extract data from the runtime. The fields are named as they are
 	// in the Python code. Eventually some of these fields will be read from
@@ -67,6 +70,7 @@ type pythonData struct {
 	vmStructs struct {
 		// https://github.com/python/cpython/blob/deaf509e8fc6e0363bd6f26d52ad42f976ec42f2/Include/cpython/object.h#L148
 		PyTypeObject struct {
+			Name	  uint `name:"tp_name"`
 			BasicSize libpf.Address `name:"tp_basicsize"`
 			Members   libpf.Address `name:"tp_members"`
 		}
@@ -102,6 +106,7 @@ type pythonData struct {
 		// https://github.com/python/cpython/blob/deaf509e8fc6e0363bd6f26d52ad42f976ec42f2/Include/cpython/pystate.h#L82
 		PyThreadState struct {
 			Frame uint `name:"frame"`
+			Context uint `name:"context"`
 		}
 		PyFrameObject struct {
 			Back        uint `name:"f_back"`
@@ -113,6 +118,33 @@ type pythonData struct {
 		// https://github.com/python/cpython/blob/deaf509e8fc6e0363bd6f26d52ad42f976ec42f2/Include/cpython/pystate.h#L38
 		PyCFrame struct {
 			CurrentFrame uint `name:"current_frame"`
+		}
+
+		// https://github.com/python/cpython/blob/deaf509e8fc6e0363bd6f26d52ad42f976ec42f2/Include/pyhash.h#L77
+		PyHashSecretSiphash struct {
+			K0 uint `name:"k0"`
+			K1 uint `name:"k1"`
+		}
+
+		// https://github.com/python/cpython/blob/deaf509e8fc6e0363bd6f26d52ad42f976ec42f2/Include/internal/pycore_context.h#L38
+		PyContextObject struct {
+			CtxVars uint `name:"ctx_vars"`
+		}
+		// https://github.com/python/cpython/blob/deaf509e8fc6e0363bd6f26d52ad42f976ec42f2/Include/internal/pycore_context.h#L47
+		PyContextVarObject struct {
+			VarName uint `name:"var_name"`
+			VarHash uint `name:"var_hash"`
+		}
+
+		// hamt_find(PyHamtObject *o, PyObject *key, PyObject **val):
+		//   if (o->h_count == 0) return F_NOT_FOUND;
+		//   int32_t key_hash = hamt_hash(key);
+		//   return hamt_node_find(o->h_root, 0, key_hash, key, val);
+		// need to reimplement https://github.com/python/cpython/blob/main/Python/hamt.c#L2035
+		// https://github.com/python/cpython/blob/deaf509e8fc6e0363bd6f26d52ad42f976ec42f2/Include/internal/pycore_hamt.h#L49
+		PyHamtObject struct {
+			HRoot int `name:"h_root"`
+			HCount int `name:"h_count"`
 		}
 	}
 }
@@ -413,6 +445,7 @@ func (p *pythonInstance) UpdateTSDInfo(ebpf interpreter.EbpfHandler, pid util.PI
 	tsdInfo tpbase.TSDInfo) error {
 	d := p.d
 	vm := &d.vmStructs
+
 	cdata := C.PyProcInfo{
 		autoTLSKeyAddr: C.u64(d.autoTLSKey) + p.bias,
 		version:        C.u16(d.version),
@@ -424,6 +457,7 @@ func (p *pythonInstance) UpdateTSDInfo(ebpf interpreter.EbpfHandler, pid util.PI
 		},
 
 		PyThreadState_frame:            C.u8(vm.PyThreadState.Frame),
+		PyThreadState_context:		C.u8(vm.PyThreadState.Context),
 		PyCFrame_current_frame:         C.u8(vm.PyCFrame.CurrentFrame),
 		PyFrameObject_f_back:           C.u8(vm.PyFrameObject.Back),
 		PyFrameObject_f_code:           C.u8(vm.PyFrameObject.Code),
@@ -435,6 +469,9 @@ func (p *pythonInstance) UpdateTSDInfo(ebpf interpreter.EbpfHandler, pid util.PI
 		PyCodeObject_co_flags:          C.u8(vm.PyCodeObject.Flags),
 		PyCodeObject_co_firstlineno:    C.u8(vm.PyCodeObject.FirstLineno),
 		PyCodeObject_sizeof:            C.u8(vm.PyCodeObject.Sizeof),
+		PyContextObject_ctx_vars:	C.u8(vm.PyContextObject.CtxVars),
+		//PyContextVarObject_var_name:	C.u8(vm.PyContextVarObject.VarName),
+		//PyContextVarObject_var_hash:	C.u8(vm.PyContextVarObject.VarHash),
 	}
 
 	err := ebpf.UpdateProcData(libpf.Python, pid, unsafe.Pointer(&cdata))
@@ -798,6 +835,7 @@ func Loader(ebpf interpreter.EbpfHandler, info *interpreter.LoaderInfo) (interpr
 	vms := &pd.vmStructs
 
 	// Introspection data not available for these structures
+	vms.PyTypeObject.Name = 24
 	vms.PyTypeObject.BasicSize = 32
 	vms.PyTypeObject.Members = 240
 	vms.PyMemberDef.Name = 0
@@ -807,6 +845,16 @@ func Loader(ebpf interpreter.EbpfHandler, info *interpreter.LoaderInfo) (interpr
 	vms.PyASCIIObject.Data = 48
 	vms.PyVarObject.ObSize = 16
 	vms.PyThreadState.Frame = 24
+	// FIXME: double check
+	vms.PyThreadState.Context = 204
+	// FIXME: PyObject is changed in free threaded python? (3.13+)
+	vms.PyContextObject.CtxVars = 32
+	vms.PyContextVarObject.VarName = 24
+	vms.PyContextVarObject.VarHash = 64
+
+	vms.PyHamtObject.HRoot = 32
+	vms.PyHamtObject.HCount = 48
+	// FIXME: end double check
 
 	switch version {
 	case pythonVer(3, 11):
@@ -822,6 +870,9 @@ func Loader(ebpf interpreter.EbpfHandler, info *interpreter.LoaderInfo) (interpr
 		vms.PyFrameObject.EntryVal = 1     // true, from stdbool.h
 		// frame got removed in PyThreadState but we can use cframe instead.
 		vms.PyThreadState.Frame = 56
+		// FIXME: double check
+		vms.PyThreadState.Context = 212
+
 		vms.PyCFrame.CurrentFrame = 8
 	case pythonVer(3, 12):
 		// Entry frame detection changed due to the shim frame
@@ -832,6 +883,8 @@ func Loader(ebpf interpreter.EbpfHandler, info *interpreter.LoaderInfo) (interpr
 		vms.PyFrameObject.EntryMember = 70 // char owner
 		vms.PyFrameObject.EntryVal = 3     // enum _frameowner, FRAME_OWNED_BY_CSTACK
 		vms.PyThreadState.Frame = 56
+		// FIXME: double check
+		vms.PyThreadState.Context = 212
 		vms.PyCFrame.CurrentFrame = 0
 		vms.PyASCIIObject.Data = 40
 	}
@@ -850,6 +903,36 @@ func Loader(ebpf interpreter.EbpfHandler, info *interpreter.LoaderInfo) (interpr
 	if err := ebpf.UpdateInterpreterOffsets(support.ProgUnwindPython, info.FileID(),
 		interpRanges); err != nil {
 		return nil, err
+	}
+
+	// Consider tracing correlation non mandatory so avoid failing the whole if something fails there
+	var pyHashSecretAddr libpf.SymbolValue
+	pyHashSecretAddr, err = ef.LookupSymbolAddress("_Py_HashSecret")
+	if err != nil {
+		fmt.Errorf("failed to lookup _Py_HashSecret: %v", err)
+	} else {
+		// room for 2 64bit integers
+		pyHashSecret := make([]byte, 16)
+
+	        if _, err := ef.ReadVirtualMemory(pyHashSecret, int64(pyHashSecretAddr)); err != nil {
+			fmt.Errorf("failed to read _Py_HashSecret: %v", err)
+		} else {
+			// Parse the _Py_HashSecret structure
+			k0 := npsr.Uint64(pyHashSecret, vms.PyHashSecretSiphash.K0)
+			k1 := npsr.Uint64(pyHashSecret, vms.PyHashSecretSiphash.K1)
+
+			// in 3.11 the default function for strings changed to siphash13 from siphash24
+			// TODO: add support for older python versions
+			if version >= 0x30b {
+				// FIXME: the string is for testing purposes only, need to fix it in opentelemetry-python first
+				hashedVarName := siphash13.Sum64Str(k0, k1, "opentelemetry_current_span")
+				// Python HAMT reduces the hash to 32 bit, see Python.hamt.c:hamt_hash
+				xoredHashedVarName := int32(hashedVarName & 0xffffffff) ^ int32(hashedVarName >> 32)
+				if (xoredHashedVarName != -1) {
+					pd.currentSpanCtxVarHash = xoredHashedVarName
+				}
+			}
+		}
 	}
 
 	return pd, nil

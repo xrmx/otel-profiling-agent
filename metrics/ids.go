@@ -710,6 +710,9 @@ const (
 	// Number of times the stack delta provider succeeded to extract stack deltas
 	IDStackDeltaProviderSuccess = 271
 
+	// Number of failures to read PyThreadState.context in unwind_python()
+	IDUnwindPythonErrBadThreadStateContextAddr = 272
+
 	// max number of ID values, keep this as *last entry*
-	IDMax = 272
+	IDMax = 273
 )

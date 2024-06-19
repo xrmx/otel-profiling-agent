@@ -64,6 +64,9 @@ typedef enum ErrorCode {
   // Python: Unable to determine the base address for thread-specific data
   ERR_PYTHON_READ_TSD_BASE = 2008,
 
+  // Python: Unable to read the context from the thread state object
+  ERR_PYTHON_BAD_THREAD_STATE_CONTEXT_ADDR = 2009,
+
   // Ruby: No entry for this process exists in the Ruby process info array
   ERR_RUBY_NO_PROC_INFO = 3000,
 
